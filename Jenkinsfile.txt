@@ -1,0 +1,61 @@
+pipeline {
+  agent any
+
+  environment {
+    // Path to inventory committed in repo
+    INVENTORY = 'ansible/inventory.ini'
+    // Use Maven installed via apt on Jenkins box (from user_data)
+    MAVEN_CMD = 'mvn'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Build & Test (Maven)') {
+      steps {
+        sh "${MAVEN_CMD} -B -Dmaven.test.skip=false clean package"
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'target/*.war', fingerprint: true
+          junit '**/target/surefire-reports/*.xml'
+        }
+      }
+    }
+
+    stage('Install/Configure Tomcat via Ansible') {
+      steps {
+        sshagent (credentials: ['ec2-key']) {
+          sh """
+            ansible --version
+            ansible-playbook -i ${INVENTORY} ansible/tomcat.yml --extra-vars war_file=$(ls target/*.war | head -n1)
+          """
+        }
+      }
+    }
+
+    stage('Verify') {
+      steps {
+        script {
+          // Print a hint to console; manual browser check next step
+          def appHost = sh(script: "grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' ${INVENTORY}", returnStdout: true).trim()
+          echo "Open: http://${appHost}:8080/addressbook/"
+        }
+      }
+    }
+  }
+
+  triggers {
+    // GitHub webhook will trigger builds
+    pollSCM('')
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+}
